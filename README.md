@@ -1,9 +1,11 @@
-### What's that?
-Small example of how easily you could init Gnosis Safe in EVM chain using deBridge external call from Solana
+# Initiate deployment of Safe account on EVM Chain from Solana
+
+### About
+This is an example of how to deploy a Safe account in the EVM chain by sending a cross-chain message from the Solana address through deBridge infrastructure.
 
 ### How to run?
 `ts-node ./src/index.ts`
-Make sure that you've specified solana private key in the `.env` file
+Make sure that you've specified Solana private key in the `.env` file
 
 ### Example output
 ```
