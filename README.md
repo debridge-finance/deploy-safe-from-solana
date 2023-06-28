@@ -5,7 +5,9 @@ This is an example of how to deploy a Safe account in the EVM chain by sending a
 
 ### How to run?
 `ts-node ./src/index.ts`
-Make sure that you've specified Solana private key in the `.env` file
+Make sure that you've specified required fields in the `.env` file
+ - solana private key (~0.05 of SOLs are requied for tx completion)
+ - address of safe owner in polygon 
 
 ### Example output
 ```

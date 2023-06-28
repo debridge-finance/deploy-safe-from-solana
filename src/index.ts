@@ -65,8 +65,15 @@ function prepareGnosisExtCall(safeOwner: string, web3: Web3) {
 async function getAmountWithAccountedGateTransferFee(client: DeBridgeSolanaClient, sendToChainId: number, neededAmount: bigint): Promise<bigint> {
     const [chainAddr] = client.accountsResolver.getChainSupportInfoAddress(sendToChainId);
     const chainSupportInfo = await client.getChainSupportInfoSafe(chainAddr);
+    /**
+     * Get chain-specific (if exists) or global transferFee bps value
+     */
     const fees = await client.getFeesOrGlobal(chainSupportInfo);
     const BPS_DENOMINATOR = 10_000n;
+    /**
+     * Transfer fee amount = amount * transferFeeBps / BPS_DENOMINATOR (see https://en.wikipedia.org/wiki/Basis_point)
+     * Hence we should send (requiredAmount * 10_000n) / (10_000n - transferFeeBps) to include transferFee amount in sendAmount
+     */
     const amount = (neededAmount * BPS_DENOMINATOR) / (BPS_DENOMINATOR - BigInt(fees.transferFeeBps.toString()));
 
     return amount;
@@ -89,22 +96,41 @@ async function estimateCalldataCost(calldata: string, receiver: string, web3: We
 }   
 
 async function main() {
-    const wallet = new helpers.Wallet(Keypair.fromSecretKey(helpers.hexToBuffer(process.env.SOLANA_WALLET!)));
-    const chainTo = 137;
+    const wallet = new helpers.Wallet(Keypair.fromSecretKey(helpers.hexToBuffer(process.env.SOLANA_PRIVATE_KEY!)));
+    const safeOwner = process.env.SAFE_OWNER;
+    if (!safeOwner || !safeOwner.startsWith("0x")) throw new Error("evm address with 0x prefix required for SAFE_OWNER env")
+    
+    const chainTo = 137; // Polygon, see https://chainlist.org/ 
     const web3 = new Web3(Web3RpcUrl[chainTo]);
     const conn = new Connection(clusterApiUrl("mainnet-beta"));
+    /**
+     * Init deBridge client. wallet is required for storeExternallCall method
+     */
     // @ts-ignore
     const client = new DeBridgeSolanaClient(conn, wallet, {
         programId: "DEbrdGj3HsRsAzx6uH4MKyREKxVAfBydijLUF3ygsFfh",
         settingsProgramId: "DeSetTwWhjZq6Pz9Kfdo1KoS5NqtsM6G8ERbX4SSCSft",
     });
     console.log(`Initialized client`);
-    const safeOwner = "0xfAC8EeA7f91DAde441876118AF8Af5C16e35f406";
+    /**
+     * Build evm transaction that will init gnosis safe for safeOwner
+     */
     const { receiver, calldata } = prepareGnosisExtCall(safeOwner, web3);
     console.log(`Got calldata: ${calldata}`);
+    /**
+     * Estimate cost of transaction execution in target chain (Polygon), convert this value to SOL amount.
+     * Since we're sending wSol we will pay fee for execution in target chain (Polygon) in source chain (Solana) send tokens
+     */
     const executionFee = await estimateCalldataCost(calldata, receiver, web3);
+    /**
+     * deBridge takes a little fee from transfer amount (transfer fee), we should calculate amount to send that 
+     * will be equal to executionFee after transfer fee subtraction
+     */
     const amountToSend = await getAmountWithAccountedGateTransferFee(client, chainTo, executionFee );
     console.log(`Estimated execution fee: ${executionFee}, with accounted transfer fee: ${ amountToSend }`);
+    /**
+     * Prepare Solana transactions for externall call storage initialization (calldata on-chain storage) and deBridge sendMessage method 
+     */
     const { transaction, extCallStorage } = await client.buildSendInstruction(
         wallet.publicKey, null, amountToSend, new PublicKey("So11111111111111111111111111111111111111112"), receiver, 
         chainTo, false, 0, safeOwner, constants.REVERT_IF_EXTERNAL_FAIL, executionFee, calldata
@@ -112,10 +138,21 @@ async function main() {
     console.log(`Built initExtCall & send instructions`)
     if (extCallStorage.length !== 0) {
         console.log(`Initializing external call...`);
+        /**
+         * Send initExtCall transactions to prepare on-chain external call data, 
+         * SOLANA_PRIVATE_KEY will be used to sign transactions and pay fees
+         * We use client's storeExternalCall method here instead of usual 
+         * connection.sendTransaction or helpers.sendAll because we need to wait 
+         * until first transaction will be finalized, send rest of them and wait for
+         * externalCall account finalization 
+        */
         const txHashes = await client.storeExternallCall(extCallStorage, calldata);
         console.log(`Sent ext call init transactions: ${txHashes.join(", ")}`);
     }
     console.log(`Sending message...`);
+    /**
+     * Send deBridge sendMessage transaction
+     */
     const txId = await helpers.sendAll(conn, wallet, transaction);
     console.log(`Sent tx: ${txId}`);
 }
